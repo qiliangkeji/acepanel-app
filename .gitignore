@@ -17,3 +17,6 @@ captures
 !*.xcworkspace/contents.xcworkspacedata
 **/xcshareddata/WorkspaceSettings.xcsettings
 node_modules/
+# 签名密钥与口令只留在本机，clone 后缺失时 release 走未签名构建
+keystore.properties
+keystore/

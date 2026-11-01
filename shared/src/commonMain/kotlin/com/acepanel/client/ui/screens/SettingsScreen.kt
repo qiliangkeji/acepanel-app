@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -57,6 +58,7 @@ import com.acepanel.client.ui.components.rememberScreenScrollState
 import com.acepanel.client.ui.theme.AceTheme
 import com.acepanel.client.ui.theme.AceType
 import com.composables.icons.lucide.CircleAlert
+import com.composables.icons.lucide.Github
 import com.composables.icons.lucide.Globe
 import com.composables.icons.lucide.Lock
 import com.composables.icons.lucide.LogOut
@@ -75,11 +77,15 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import com.acepanel.client.data.runSafely
 
+/** 客户端源码仓库，设置页「项目地址」的跳转目标。 */
+private const val PROJECT_REPO_URL = "https://github.com/qiliangkeji/acepanel-app/"
+
 @Composable
 fun SettingsScreen(store: AceStore) {
     val colors = AceTheme.colors
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    val uriHandler = LocalUriHandler.current
     var setting by remember { mutableStateOf<JsonObject?>(null) }
     var timezone by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
@@ -125,6 +131,16 @@ fun SettingsScreen(store: AceStore) {
                 }
             updating = false
         }
+    }
+
+    fun openProjectRepo() {
+        // 桌面端没有可用浏览器、Android 端缺少浏览器组件时 openUri 会抛异常，
+        // 退化成复制链接并提示，保证用户始终能拿到仓库地址。
+        runCatching { uriHandler.openUri(PROJECT_REPO_URL) }
+            .onFailure {
+                clipboard.setText(AnnotatedString(PROJECT_REPO_URL))
+                store.toast("链接已复制：$PROJECT_REPO_URL")
+            }
     }
 
     Column(
@@ -211,6 +227,8 @@ fun SettingsScreen(store: AceStore) {
                     }
                     RowDivider()
                     ActionRow(Lucide.Trash2, "清除缓存", "本地临时数据") { store.clearLocalCache() }
+                    RowDivider()
+                    ActionRow(Lucide.Github, "项目地址", "GitHub") { openProjectRepo() }
                     RowDivider()
                     ActionRow(Lucide.LogOut, "退出登录", null, danger = true) { showLogout = true }
                 }
