@@ -1,5 +1,7 @@
 package com.acepanel.client.mcp
 
+import com.acepanel.client.platform.appDataDir
+import com.acepanel.client.platform.platformName
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
@@ -76,6 +78,7 @@ object McpBridge {
             server = instance
             this.port = instance.boundPort
             this.token = token
+            autoConfigureMcp(instance.boundPort, token)
             true
         } catch (t: Throwable) {
             println("[McpBridge] failed to start on $host:$port - ${t.message}")
@@ -132,6 +135,40 @@ object McpBridge {
         System.getProperty("acepanel.mcp.host")
             ?: System.getenv("ACEPANEL_MCP_HOST")
             ?: DEFAULT_HOST
+
+    /**
+     * 桌面端启动后自动完成 MCP 配置：
+     * 1. 把随 App 打包的 acepanel-mcp 代理释放到 appDataDir()；
+     * 2. 写一份通用配置 ~/.acepanel/mcp-config.json；
+     * 3. 对已安装的 WorkBuddy / Claude Desktop / Cursor / Cline / Windsurf 自动合并条目。
+     *
+     * 只处理配置目录已经存在的客户端，不会凭空创建；可用 -Dacepanel.mcp.autoconfig=0 关闭。
+     */
+    private fun autoConfigureMcp(port: Int, token: String) {
+        if (System.getProperty("acepanel.mcp.autoconfig") == "0") return
+        if (platformName() != "Desktop") return
+        runCatching {
+            val proxy = McpInstaller.ensureProxy()
+            val command = proxy?.absolutePath
+            McpConfigWriter.writeNeutralConfig(
+                File(appDataDir(), "mcp-config.json"),
+                port,
+                token,
+                command,
+            )
+            if (command != null) {
+                McpConfigWriter.writeDetectedClientConfigs(command, port, token)
+            } else {
+                val home = System.getProperty("user.home")?.takeIf { it.isNotBlank() }
+                if (home != null) {
+                    McpConfigWriter.writeWorkBuddyConfig(File(home, ".workbuddy/mcp.json"), port, token)
+                }
+            }
+            println("[McpBridge] MCP auto-config done (proxy=${command ?: "unavailable"})")
+        }.onFailure {
+            println("[McpBridge] MCP auto-config skipped: ${it.message}")
+        }
+    }
 
     private fun generateToken(): String {
         val bytes = ByteArray(24)
