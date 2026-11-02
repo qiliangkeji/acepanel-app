@@ -215,7 +215,7 @@ private fun MobileLogin(store: AceStore) {
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
                     AceCheckBox(store.loginRemember, { store.loginRemember = it })
-                    AceText("记住登录状态", style = AceType.bodySmall, color = colors.text2)
+                    AceText("记住并自动登录", style = AceType.bodySmall, color = colors.text2)
                 }
                 AceText(
                     "忘记密码？",
@@ -458,7 +458,7 @@ private fun DesktopLogin(store: AceStore) {
                             horizontalArrangement = Arrangement.spacedBy(9.dp),
                         ) {
                             AceCheckBox(store.loginRemember, { store.loginRemember = it })
-                            AceText("记住登录状态", style = AceType.bodySmall, color = colors.text2)
+                            AceText("记住并自动登录", style = AceType.bodySmall, color = colors.text2)
                         }
                         AceText(
                             "忘记密码？",

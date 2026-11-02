@@ -39,6 +39,11 @@ kotlin {
        }
     }
     sourceSets {
+        // 桌面(JVM) 与 Android 共用的实现（本地 MCP 桥）。两边都是 JVM 字节码，
+        // 直接把同一份源码目录挂到两个编译单元，避免中间源集在不同 KMP / Android 插件版本下的 API 差异。
+        getByName("jvmMain").kotlin.srcDir("src/jvmAndAndroidMain/kotlin")
+        getByName("androidMain").kotlin.srcDir("src/jvmAndAndroidMain/kotlin")
+
         androidMain.dependencies {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.compose.uiTooling)

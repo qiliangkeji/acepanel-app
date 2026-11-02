@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.acepanel.client.platform.CredentialVault
 import com.acepanel.client.platform.PlatformSettings
 import com.acepanel.client.platform.currentTimeMillis
 import com.acepanel.client.platform.debugAutoLogin
@@ -196,6 +197,7 @@ class AceStore(
     private var toastJob: Job? = null
     private var dashboardJob: Job? = null
     private var pollJob: Job? = null
+    private var autoLoginJob: Job? = null
 
     val activeProfile: ServerProfile?
         get() = profiles.firstOrNull { it.id == activeProfileId }
@@ -255,6 +257,29 @@ class AceStore(
         persistProfiles()
     }
 
+    /**
+     * 会话过期后尝试用本地保存的凭据静默重登。
+     * 账号开启了两步验证/验证码时会失败，调用方需要回退到登录页。
+     */
+    private suspend fun tryStoredLogin(profile: ServerProfile, client: AceApi): Boolean {
+        if (profile.username.isBlank()) return false
+        val password = runSafely { CredentialVault.load(profile.id) }.getOrNull()
+        if (password.isNullOrBlank()) return false
+        return runSafely {
+            client.login(username = profile.username, password = password)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun newClient(profile: ServerProfile, cookies: Map<String, String>): AceApi = AceApi(
+        baseUrl = profile.baseUrl,
+        initialCookies = cookies,
+        onCookiesChanged = { updated -> saveCookies(profile.id, updated, true) },
+        onSessionExpired = { scope.launch { handleSessionExpired() } },
+        entrance = profile.entrance,
+        userAgent = profile.userAgent,
+    )
+
     fun boot() {
         scope.launch {
             delay(420)
@@ -270,22 +295,19 @@ class AceStore(
             }
             bootMessage = "正在恢复 ${profile.name.ifBlank { profile.baseUrl }} 的会话…"
             val cookies = loadCookies(profile.id)
-            if (cookies.isEmpty()) {
+            val hasStoredPassword = !runSafely { CredentialVault.load(profile.id) }.getOrNull().isNullOrBlank()
+            if (cookies.isEmpty() && !hasStoredPassword) {
                 authState = AuthState.Login
                 return@launch
             }
-            val client = AceApi(
-                profile.baseUrl,
-                cookies,
-                onCookiesChanged = { updated -> saveCookies(profile.id, updated, true) },
-                onSessionExpired = { scope.launch { handleSessionExpired() } },
-                entrance = profile.entrance,
-                userAgent = profile.userAgent,
-            )
+            val client = newClient(profile, cookies)
             api = client
             scope.launch {
                 val result = runSafely { client.visitEntrance(); client.isLogin() }
                 if (result.getOrDefault(false)) {
+                    onAuthenticated(client, profile, remember = true)
+                } else if (tryStoredLogin(profile, client)) {
+                    // Cookie 过期但本地有凭据：静默重登，用户无感。
                     onAuthenticated(client, profile, remember = true)
                 } else {
                     client.close()
@@ -297,8 +319,11 @@ class AceStore(
                         login(debugLogin.first, debugLogin.second, debugLogin.third)
                     } else {
                         authState = AuthState.Login
-                        loginError = result.exceptionOrNull()?.let { friendlyError(it) }
-                            ?: "会话已失效，请重新登录"
+                        loginError = if (cookies.isEmpty()) {
+                            "请登录面板"
+                        } else {
+                            result.exceptionOrNull()?.let { friendlyError(it) } ?: "会话已失效，请重新登录"
+                        }
                     }
                 }
             }
@@ -382,6 +407,10 @@ class AceStore(
                 activeProfileId = profile.id
                 settings.putString("active_profile", profile.id)
                 saveCookies(profile.id, client.cookieSnapshot, remember)
+                // 记住登录状态时把密码加密存本地，Cookie 过期后可静默重登。
+                if (remember && password.isNotBlank()) {
+                    runSafely { CredentialVault.save(profile.id, password) }
+                }
                 user = info
                 panelInfo = panel
                 systemInfo = sys
@@ -681,23 +710,10 @@ class AceStore(
             loginAddress = profile.baseUrl + profile.entrance
             loginUsername = profile.username
             val cookies = loadCookies(profile.id)
-            if (cookies.isEmpty()) {
-                authState = AuthState.Login
-                selectedTab = RootTab.OVERVIEW
-                pageStack.clear()
-                return@launch
-            }
-            val client = AceApi(
-                profile.baseUrl,
-                cookies,
-                onCookiesChanged = { updated -> saveCookies(profile.id, updated, true) },
-                onSessionExpired = { scope.launch { handleSessionExpired() } },
-                entrance = profile.entrance,
-                userAgent = profile.userAgent,
-            )
+            val client = newClient(profile, cookies)
             api = client
             val ok = runSafely { client.visitEntrance(); client.isLogin() }.getOrDefault(false)
-            if (ok) {
+            if (ok || tryStoredLogin(profile, client)) {
                 onAuthenticated(client, profile, remember = true)
                 selectedTab = RootTab.OVERVIEW
                 pageStack.clear()
@@ -714,6 +730,7 @@ class AceStore(
         profiles = profiles.filterNot { it.id == profile.id }
         persistProfiles()
         clearCookies(profile.id)
+        runSafely { CredentialVault.clear(profile.id) }
         if (activeProfileId == profile.id) {
             api?.close()
             api = null
@@ -728,6 +745,8 @@ class AceStore(
         val client = api
         val profile = activeProfile
         scope.launch {
+            autoLoginJob?.cancel()
+            autoLoginJob = null
             runCatching { client?.logout() }
             client?.close()
             api = null
@@ -741,6 +760,8 @@ class AceStore(
             selectedTab = RootTab.OVERVIEW
             if (profile != null) {
                 clearCookies(profile.id)
+                // 主动退出时不要把密码留在本地，否则下次又会被自动登回去。
+                runSafely { CredentialVault.clear(profile.id) }
                 loginAddress = profile.baseUrl + profile.entrance
                 loginUsername = profile.username
             }
@@ -852,12 +873,31 @@ class AceStore(
     }
 
     fun handleSessionExpired() {
+        // 自动重登过程中又收到 401 时不要再套娃。
+        if (autoLoginJob?.isActive == true) return
         val profile = activeProfile
-        if (profile != null) clearCookies(profile.id)
-        api?.close()
+        val previous = api
+        previous?.close()
         api = null
-        authState = AuthState.Login
-        loginError = "登录状态已过期，请重新登录"
+        if (profile == null) {
+            authState = AuthState.Login
+            loginError = "登录状态已过期，请重新登录"
+            return
+        }
+        clearCookies(profile.id)
+        autoLoginJob = scope.launch {
+            val client = newClient(profile, emptyMap())
+            api = client
+            if (tryStoredLogin(profile, client)) {
+                loginError = null
+                onAuthenticated(client, profile, remember = true)
+            } else {
+                client.close()
+                api = null
+                authState = AuthState.Login
+                loginError = "登录状态已过期，请重新登录"
+            }
+        }
     }
 
     fun toast(text: String, isError: Boolean = false) {

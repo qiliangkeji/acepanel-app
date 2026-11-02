@@ -12,4 +12,5 @@ actual class PlatformSettings actual constructor() {
     actual fun remove(key: String) = prefs.remove(key)
 }
 
-actual fun appDataDir(): String = System.getProperty("user.home") + "/.acepanel"
+actual fun appDataDir(): String =
+    System.getProperty("acepanel.data.dir") ?: (System.getProperty("user.home") + "/.acepanel")
